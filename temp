@@ -1,0 +1,693 @@
+#include<list>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <time.h>
+#include <string>
+#include <stdlib.h>
+#include <iomanip>
+#include<exception>
+#include <stack>
+#include <vector>
+#include <queue>
+
+using namespace std;
+
+
+class Error: public exception
+{
+	public:
+		virtual const char* what() const throw()
+		{
+			return "Error!"; 
+		}
+};
+class Notfilename: public exception
+{
+	public:
+		virtual const char* what() const throw()
+		{
+			return "Error: Name provided is not a filename"; 
+		}
+};
+class Samename: public exception
+{
+	public:
+		virtual const char* what() const throw()
+		{
+			return "Error: Folder has an element with the same name"; 
+		}
+};
+class Parentnotfolder: public exception
+{
+	public:
+		virtual const char* what() const throw()
+		{
+			return "Error: Parent inode is not a folder"; 
+		}
+};
+
+string Currentdate(){ //Function to find the current date so that it can be used when creating new inodes
+	string date = ""; 
+	time_t date_ = time(0); 
+	tm* current = localtime(&date_);
+	date += to_string((current->tm_mday))  + "-" + to_string((current->tm_mon+1)) + "-" + to_string((current->tm_year-100));
+	return date;
+}
+
+class inode{//All the data will be stored in the form of a tree made up of inodes
+	private:
+		friend class VFS;
+	public:
+		bool isFile;
+		string date;
+		string name;
+		int size;
+		inode* parent;
+		vector<inode> children;//vector of inodes that
+		inode();
+		inode(bool isFile,string name, int size, string date, inode* parent);//constructor of inode class
+		~inode();//destructor of inode class
+		string getname(){
+			return name;
+		}
+		vector<inode> getchildren(){
+			return children;
+		}
+		void addchild(inode child){
+			children.push_back(child);
+		}
+		void removechild(inode* child){
+			int index = -1;
+			for(auto i:children){
+				index++;
+				if(i.name == child->name){
+					break;
+				}
+			}
+			children.erase(children.begin() + index);
+		}
+		void Swap(inode child1,inode child2){
+			inode temp = child1;
+			child1 = child2;
+			child2 = temp;
+		}
+		inode* decend(int index){
+			inode* decend = &children.at(index);
+			return decend;
+		}
+		void setparent(inode *new_parent);
+};
+
+inode::inode(){
+	this->isFile = 0;
+    this->date = Currentdate();
+	this->name = "";
+	this->size = 0;
+    this->parent = NULL;	
+}
+inode::inode(bool isFile,string name, int size, string date, inode* parent){
+	this->isFile = isFile;
+    this->date = date;
+	this->name = name;
+	this->size = size;
+    this->parent = parent;
+}
+inode::~inode(){
+	if (!isFile){//delete children;
+		//delete &children;
+	}
+}
+string pwd(inode* curr){//returns a string which is the full file path
+	stack<string> mystack;
+	string path = "";
+	if(curr->parent == NULL){
+		return "/";
+	}
+	while(curr->parent != NULL){//iterates through the parents of the current node until it reaches the root
+		mystack.push(curr->name);
+		curr = curr->parent;
+	}
+	while(!mystack.empty()){
+		path += "/" + mystack.top();//addition of '/' to the string so that it is a path
+		mystack.pop();
+	}
+	return path;
+}
+
+void inode::setparent(inode *new_parent){//Fucnction to set a new parent to an inode
+	this->parent = new_parent;
+}
+class Trash{//A class for storing the inode data after it has been removed by the rm function
+	public:
+		inode node;
+		string prev_path;
+		int prev_size;
+		Trash(inode node,string prev_path,int prev_size){
+			this->node = node;
+			this->prev_path = prev_path;
+			this->prev_size = prev_size;
+		}
+};
+
+class VFS{//The main tree class that links all the inodes 
+	private: 
+		inode* root;//The root inode
+		vector<inode*> positionlist;//A vector of pointers to all the currently existing inodes
+		friend class inode;
+	public:
+		VFS();
+		~VFS();
+		inode* previous;
+		inode* getRoot();
+		void help();
+		void realpath(string name, inode* curr);
+		void ls(inode *curr); 
+		void ls_sort(inode &curr); 
+		void mkdir(string foldername, inode* curr);
+		void Mkdir(string file_name,string date);
+		void touch(string file_name,int size , inode* curr);
+		void Touch(string file_name,int size,string date);
+		void cd(string foldername, inode* &curr);
+		void find(string name, inode* curr);
+		void mv(string filename, string foldername, inode* curr);
+	 	void rm(string name,queue<Trash> &bin);
+		int size(string name,inode* curr); 
+		int Size(inode* curr); 
+		void showbin(queue<Trash> bin);
+		void recover(inode* curr,queue<Trash> bin); 
+		void Exit(string filename);
+		void dumpData(inode* current, ofstream &newFile); 
+		void loaddata(string filename);
+		void dumpdata(ofstream &outFile, inode* curr);
+		void print_all(inode* root);
+		inode* getchild(string name, inode* curr);
+		inode* getposition(string name);
+		void removeposition(inode* node);
+		void recoverchildrenpos(inode curr);
+};
+
+void VFS::print_all(inode* root){ //Function to iterate through the position list and print the path of each inode
+	for(auto i: positionlist){
+		cout<<pwd(i)<<endl;
+	}
+}
+inode* VFS::getchild(string name, inode* curr){//searches the position list for a child with a specific name and returns it
+	for(auto i: positionlist){
+		if(name == i->name){
+			return i;
+		}
+	}
+	cout<<"Error: File not found"<<endl;//if the file is not found print error message
+	throw Error();
+}
+VFS::VFS(){//Constructor of VFS class
+	root = new inode(false,"/",0,Currentdate(),NULL);
+	previous = getRoot();
+}
+VFS::~VFS(){//Destructor of VFS class
+	delete root;
+}
+
+inode* VFS::getRoot(){//Getter function for root
+	return root;
+}
+void VFS::mkdir(string foldername,inode* curr){//Function for creating an folder inode under current inode provided in arguments
+	vector<inode> curr_folder = curr->getchildren();
+	for(char i: foldername){//checking if given name is a file name
+		if(i == '.'){
+			cout<<"Error: Name provided is not a foldername"<<endl;//if it is a filename throw error message
+			throw Error();
+		}
+	}
+	for(auto i: curr_folder){
+		if(i.name == foldername){//Checking if the foldername is unique
+			cout<<"Error: Folder has an element with the same name"<<endl;
+			throw Error();
+		}
+	}
+	if(curr->isFile){//checking if the current inode is of type folder
+		cout<<"Error: Current inode is not a folder"<<endl;
+		throw Error();
+	}else{
+		inode* folder = new inode(false, foldername, 10, Currentdate(),curr);//creating new inode. inode is linked to parent from by using the inode contructor
+		curr->addchild(*folder);//Adding the new folder inode to the children list of its parent(curr inode)
+		positionlist.push_back(folder);//adding the new inode to the positionlist
+		cout<<"Folder with the name "<< foldername << " has been created"<<endl;	
+	}
+}
+
+void VFS::touch(string file_name,int size, inode* curr){//Function for creating an file inode under current inode provided in arguments
+	vector<inode> curr_folder = curr->children;
+	bool isFile = 0;//Variable used to check if the given filename is vaild (needs to have '.')
+	for(char i: file_name){//checking if the given filename is vaild by iterating through each char of filename and check for '.'
+		if(i == '.'){
+			isFile = true;
+			break;
+		}
+	}if(isFile == false){//if no '.' is found then throw error
+		cout<<"Error: Name provided is not a filename"<<endl;
+		throw Error();
+	}
+	for(auto i: curr_folder){//Checking if file name is unique
+		if(i.name == file_name){
+			cout<<"Error: Folder has an element with the same name"<<endl;
+			throw Error();
+		}
+	}if(curr->isFile){//Checking id the current inode is of type folder
+		cout<<"Error: Parent inode is not a folder"<<endl;
+		throw Error();
+	}else{
+		inode* file = new inode(true, file_name, size, Currentdate(),curr);//creating new inode. inode is linked to parent from by using the inode contructor
+		curr->addchild(*file);//Adding the new file inode to the children list of its parent(curr inode)
+		positionlist.push_back(file);//adding the new inode to the positionlist
+		cout<<"File with the name "<< file_name << " has been created"<<endl;
+	}
+}
+
+void VFS::realpath(string name, inode* curr){//Prints the path of a node when given its name and under the current directory
+	string realpath = pwd(curr) + "/" + name;
+	cout<<realpath<<endl;
+}
+void VFS::ls(inode *curr){//lists the children inodes of the current directory
+	for(auto i:curr->getchildren()){//iterates through current inodes children
+		if(i.isFile){//different types depending on the type of the inode
+			cout<<"file"<<"  ";
+		}else{
+			cout<<"dir"<<"  ";
+		}
+		cout<<i.name<<"  "<<i.size<<"bytes  "<<i.date<<endl;//printing the details of the child inode
+	}
+}
+
+void VFS::ls_sort(inode &curr){//Same as ls but prints the children in order based on size
+    for (int i = 0; i < curr.getchildren().size()-1; i++){    
+    	for (int j = 0; j < curr.getchildren().size()-i-1; j++){
+        	if (curr.getchildren()[j].size < curr.getchildren()[j+1].size){
+            inode temp = curr.children[j];
+			curr.children[j] = curr.children[j+1];
+			curr.children[j+1] = temp;
+			}
+		}
+	}
+	ls(&curr);
+}
+	
+void VFS::removeposition(inode* node){
+	int index = -1;
+	for(auto i: positionlist){
+		index++;
+		if(i->name == node->name){
+			break;
+		}
+	}
+	positionlist.erase(positionlist.begin() + index);
+}
+void VFS::cd(string foldername, inode* &curr){
+	inode* temp = nullptr;
+	bool namepass = 0;
+	if(foldername == ".."){ 
+		namepass = 1;
+		if (curr->parent == NULL){ 
+			cout << "Error: Already at root" << endl;
+			cout<<"current directory: "<<pwd(curr)<<endl;
+			return ;
+		}else{
+			previous = curr;
+			curr = curr->parent;
+			cout<<"Current directory: "<<pwd(curr)<<endl;
+			return ;
+		}
+	}
+	if(namepass == 0){
+		for(char i: foldername){
+			if(i == '.'){
+				cout<<"Error: Name provided is not a foldername"<<endl;
+				throw Error();
+			}
+		}
+	}
+	if (foldername == " "|| foldername == "" || foldername == "cd"){
+		previous = curr;
+		curr = getRoot();
+		cout<<"current directory: "<<pwd(curr)<<endl;
+		return ;
+	}else if(foldername == "-"){
+		temp = curr;
+		curr = previous;
+		previous = temp;
+		cout<<"current directory: "<<pwd(curr)<<endl;
+		return ;
+	}
+	else if(foldername[0] == '/'){
+		vector<string> name;
+		string temp;
+		stringstream strStream(foldername);
+		while(getline(strStream, temp,'/')){
+			name.push_back(temp);
+		}
+		getline(strStream,temp);
+		name.push_back(temp);
+		previous = curr;
+		curr = getchild(name.back(),getRoot());
+		cout<<"current directory: "<<pwd(curr)<<endl;
+		return ;
+	}
+	else{
+		previous = curr;
+		curr = getchild(foldername,getRoot());
+		cout<<"current directory: "<<pwd(curr)<<endl;
+		return ;
+	}
+	return ;
+}
+
+void VFS::mv(string filename, string foldername, inode* curr){
+	bool ischildpresent = 0;
+	if(filename[0] == '/'){
+		vector<string> name;
+		string temp;
+		stringstream strStream(filename);
+		while(getline(strStream, temp,'/')){
+			name.push_back(temp);
+		}
+		getline(strStream,temp);
+		name.push_back(temp);
+		filename = name.back();
+	}
+	if(foldername[0] == '/'){
+		vector<string> name;
+		string temp;
+		stringstream strStream(foldername);
+		while(getline(strStream, temp,'/')){
+			name.push_back(temp);
+		}
+		getline(strStream,temp);
+		name.push_back(temp);
+		foldername = name.back();
+	}
+	for(char i: foldername){
+		if(i == '.'){
+			cout<<"Error: Name provided is not a foldername"<<endl;
+			throw Error();
+		}
+	}bool isFile = 0;
+	for(char i: filename){
+		if(i == '.'){
+			isFile = true;
+			break;
+		}
+	}if(isFile == false){
+		cout<<"Error: Name provided is not a filename"<<endl;
+		throw Error();
+	}for(auto i:curr->getchildren()){
+		if(i.name == filename){
+			ischildpresent = 1;
+			break;
+		}
+	}if(ischildpresent == 0){
+		cout<<"Error: File/Folder not found in current directory"<<endl;
+		throw Error();
+	}
+	inode* file = getchild(filename,curr);
+	file->parent->removechild(file);
+	inode* folder = getchild(foldername,curr);
+	file->setparent(folder);
+	folder->addchild(*file);
+	cout<<"File/Folder has been moved to: "<<pwd(file)<<endl;
+}
+int VFS::size(string name, inode* curr){
+	if(name == "" || name == " "){
+		return Size(curr);
+	}
+	return Size(getposition(name));
+}
+int VFS::Size(inode* curr){
+	int totalsize = 0;
+	string temp,name = curr->name;
+	if(curr->parent == NULL){
+		for(auto i: positionlist){
+			totalsize += i->size;
+		}
+		return totalsize;
+	}
+	if(!curr->isFile){
+		for (auto i: positionlist){
+			stringstream strStream(pwd(i));
+			while(getline(strStream, temp,'/')){
+				if(temp == name){
+					totalsize += i->size;
+				}
+			}
+		}
+	}
+	return totalsize;
+}
+
+void VFS::rm(string name,queue<Trash> &bin){
+	
+	if(name[0] == '/'){
+		vector<string> names;
+		string temp;
+		stringstream strStream(name);
+		while(getline(strStream, temp,'/')){
+			names.push_back(temp);
+		}
+		getline(strStream,temp);
+		names.push_back(temp);
+		name = names.back();
+	}
+	inode* curr = getchild(name,getRoot());
+	int prev_size = Size(curr);
+	curr->parent->removechild(curr);
+	removeposition(curr);
+	// for(auto i: positionlist){
+	// 	for(auto j: curr->getchildren()){
+	// 		if(j.name == i->name){
+	// 			removeposition(&j);
+	// 		}
+	// 	}
+	// }
+	string temp;
+	for (auto i: positionlist){
+		stringstream strStream(pwd(i));
+		while(getline(strStream, temp,'/')){
+			if(temp == name){
+				removeposition(i);
+			}
+		}
+	}
+	Trash trash(*curr,pwd(curr),prev_size);
+	bin.push(trash);
+	cout<< name <<" has been removed"<<endl;
+}
+
+void VFS::showbin(queue<Trash> bin){
+	if(!bin.empty()){
+		inode trash = bin.front().node;
+		cout<<"Name: "<< trash.name<<endl;
+		cout<<"Date created: "<< trash.date<<endl;
+		cout<<"Size: "<< bin.front().prev_size << " bytes"<<endl;
+		if(trash.isFile){
+			cout<<"Type: File"<<endl;
+		}else{
+			cout<<"Type: Folder"<<endl;
+		}
+		cout<<"Previous path: "<<bin.front().prev_path<<endl;
+	}else{
+		cout<<"Bin is empty!"<<endl;
+	}
+}
+
+void emptybin(queue<Trash> &bin){
+	while(!bin.empty()){
+		bin.pop();
+	}
+	cout<<"Bin emptied successfully"<<endl;
+}
+
+void VFS::find(string name, inode* curr){
+	for(auto i: positionlist){
+		if(name == i->name){
+			cout<<"Found "<<name<<" in path: "<<pwd(i)<<endl;
+		}
+	}
+}
+
+void VFS::recoverchildrenpos(inode curr){
+	for(auto i: curr.getchildren()){
+		if(i.getchildren().empty()){
+			cout<<i.parent->name<<endl;
+			positionlist.push_back(&i);
+		}else{
+			recoverchildrenpos(i);
+		}
+	}
+}
+
+void VFS::recover(inode* curr,queue<Trash> bin){
+	bool foundpath = 0;
+	inode recover_inode = bin.back().node;
+	string name = bin.back().prev_path;
+	cout<<"parent: "<<recover_inode.parent->name<<endl;
+	vector<string> names;
+	string temp;
+	stringstream strStream(name);
+	while(getline(strStream, temp,'/')){
+		names.push_back(temp);
+	}
+	positionlist.push_back(&recover_inode);
+	names.pop_back();
+	cout<<"prev: "<<names.back()<<endl;
+	for(auto i: positionlist){
+		cout<<"positionlist: "<<i->name<<endl;
+		if(names.back() == i->name){
+			foundpath = 1;
+			inode* prev_directory = getchild(names.back(),curr);
+			recover_inode.setparent(prev_directory);
+			prev_directory->addchild(recover_inode);
+			positionlist.push_back(&recover_inode);
+			recoverchildrenpos(recover_inode);
+			break;
+		}
+	}if(foundpath == 0){
+		cout<<"Error: Previous path does not exist"<<endl;
+	}
+}
+void VFS::Touch(string file_name,int size,string date){
+	inode* file = new inode(true, file_name, size, date,nullptr);
+	positionlist.push_back(file);
+}
+
+void VFS::Mkdir(string file_name,string date){
+	if(file_name == ""){
+	inode* folder = new inode(false, file_name, 0 , date,nullptr);
+	positionlist.push_back(folder);
+	}else{
+	inode* folder = new inode(false, file_name, 10, date,nullptr);
+	positionlist.push_back(folder);}
+}
+
+inode* VFS::getposition(string name){
+	string temp;
+	if(name[0] == '/'){
+		stringstream strStream(name);
+		while(getline(strStream, temp,'/')){}
+		getline(strStream,temp);
+		name = temp;
+	}
+	for(auto i: positionlist){
+		if(i->name == name){
+			return i;
+		}
+	}
+}
+
+void VFS::loaddata(string filename){
+	string temp;
+	ifstream inFile;
+	string name, size, date;
+	vector<string> vector_name;
+    inFile.open(filename);
+    if (!inFile.is_open()) {
+        cout << "Error: File could not be opened";
+        return;
+    }
+    string lineContents;
+	getline(inFile, lineContents);
+    while (getline(inFile, lineContents)){
+        stringstream strStream(lineContents);
+        getline(strStream, name, ',');
+        getline(strStream, size, ',');
+        getline(strStream, date);
+		stringstream strStream1(name);
+		while(getline(strStream1, temp,'/')){
+			vector_name.push_back(temp);
+		}
+		getline(strStream1,temp);
+		vector_name.push_back(temp);
+		bool isfile = 0;
+		for(char i: vector_name.back()){
+			if(i == '.'){
+				isfile = 1;
+				cout<<vector_name.back()<<endl;
+				Touch(vector_name.back(), stoi(size),date);
+			}
+		}if(isfile == 0){
+			//cout<<vector_name.back()<<endl;
+			Mkdir(vector_name.back(),date);
+		}
+	}
+	
+	inFile.close();
+	ifstream inFile2;
+	inFile2.open(filename);
+	getline(inFile2, lineContents);
+    while (getline(inFile2, lineContents)){
+        stringstream strStream2(lineContents);
+        getline(strStream2, name, ',');
+        getline(strStream2, size, ',');
+        getline(strStream2, date);
+		stringstream strStream3(name);
+		while(getline(strStream3, temp,'/')){
+			vector_name.push_back(temp);
+		}
+		vector_name.push_back(temp);
+		int isRoot = 0;
+		for(int i = 0;i<name.length();i++){
+			if(name[i] == '/'){
+				isRoot++;
+			}
+		}if(isRoot == 1){
+		getposition(vector_name[vector_name.size()-1])->setparent(getRoot());
+		getRoot()->addchild(*getposition(vector_name[vector_name.size()-1]));
+		}else{
+		inode* child = getposition(vector_name[vector_name.size()-1]);
+		vector_name.pop_back();
+		inode* parent = getposition(vector_name[vector_name.size()-2]);
+		child->setparent(parent);
+		parent->addchild(*child);
+		}
+	}
+	cout<<"Data has been loaded..."<<endl;
+}
+
+void VFS::dumpdata( ofstream &outFile, inode* curr){
+	//outFile << pwd(getRoot()) << "," << getRoot()->size << "," << getRoot()->date << endl;
+	for(auto i: positionlist){
+		outFile << pwd(i) << "," << i->size << "," << i->date << endl; 
+	}
+	return;
+}
+
+void VFS::Exit(string filename){
+	ofstream outFile;
+	outFile.open(filename);
+	if (!outFile.is_open()) {
+        cout << "Error: File could not be opened";
+        return;
+    }
+	dumpdata(outFile,getRoot());
+	cout<<"Data has been saved..."<<endl;
+	cout<<"Exiting..."<<endl;
+	exit(1);
+}
+
+void VFS::help(){
+    cout<<"List of available Commands:"<<endl
+		<<"help                                    : Prstrings menu of commands"<<endl
+		<<"pwd                                     : Prstrings the path of current inode"<<endl
+		<<"realpath <filename>                     : Prstrings the absolute/full path of a given filename of a file within the current directory"<<endl
+		<<"ls                                      : Prstrings the children of the current inode"<<endl
+		<<"mkdir <foldername>                      : Creates a folder under the current folder"<<endl
+		<<"touch <filename> <size>                 : Creates a file under the current inode location"<<endl
+		<<"cd                                      : "<<endl
+		<<"find <foldername> || <filename>         : Returns the path of the file (or the folder) if it exists"<<endl
+		<<"mv <filename> <foldername>              : Moves a file located under the current inode location, to the specified folder path"<<endl
+		<<"rm <filename> || <foldername>           : Removes the specified folder or file and puts it in a Queue of MAXBIN=10"<<endl
+		<<"size <foldername> || <filename>         : Returns the total size of the folder"<<endl
+        <<"emptybin                                : Returns the capacity of vector"<<endl
+		<<"showbin                                 : Tests if the vector container is empty"<<endl
+		<<"recover                                 : "<<endl
+		<<"exit/quit                               : Exit the Program"<<endl;
+}
